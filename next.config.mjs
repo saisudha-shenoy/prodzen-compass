@@ -16,6 +16,18 @@ const nextConfig = {
   // via real Node `require()` at runtime instead, which pdfjs-dist's own
   // fallback path handles correctly.
   serverExternalPackages: ["officeparser", "pdf-parse", "pdfjs-dist", "@napi-rs/canvas"],
+
+  // Vercel's output file tracer only bundles a dependency into the deployed
+  // serverless function if it can statically see the require() — pdfjs-dist
+  // loads @napi-rs/canvas inside its own try/catch polyfill fallback, which
+  // the tracer misses, so the package (and its platform-specific native
+  // binary sub-package, e.g. @napi-rs/canvas-linux-x64-gnu) never made it
+  // into /var/task even though `npm install` resolved it during the build.
+  // Forcing inclusion here is the documented fix for tracer-missed optional
+  // native dependencies.
+  outputFileTracingIncludes: {
+    "/api/upload": ["./node_modules/@napi-rs/canvas*/**/*"],
+  },
 };
 
 export default nextConfig;
