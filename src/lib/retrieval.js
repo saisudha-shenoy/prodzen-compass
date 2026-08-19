@@ -47,6 +47,42 @@ export async function retrieveChunks(query, filters = {}, matchCount = DEFAULT_M
   }));
 }
 
+// Postgres full-text keyword search over chunks.content, independent of the
+// semantic (embedding) path — see keyword_search_chunks() in
+// supabase/migrations/20260819_hybrid_search.sql. Mirrors match_chunks()'s
+// filter signature exactly so callers can pass the same filters object to
+// both. Returns ts_rank instead of cosine similarity; no embedding call.
+export async function keywordSearchChunks(query, filters = {}, matchCount = DEFAULT_MATCH_COUNT) {
+  const { data, error } = await supabaseAdmin.rpc("keyword_search_chunks", {
+    query_text: query,
+    match_count: matchCount,
+    filter_client: filters.client ?? null,
+    filter_document_type: filters.documentType ?? null,
+    filter_author: filters.author ?? null,
+    filter_topic_category: filters.topicCategory ?? null,
+    filter_date_from: filters.dateFrom ?? null,
+    filter_date_to: filters.dateTo ?? null,
+  });
+
+  if (error) {
+    throw new Error(`keyword_search_chunks query failed: ${error.message}`);
+  }
+
+  return (data ?? []).map((row) => ({
+    chunkId: row.chunk_id,
+    documentId: row.document_id,
+    content: row.content,
+    chunkIndex: row.chunk_index,
+    rank: row.rank,
+    title: row.title,
+    client: row.client,
+    documentType: row.document_type,
+    author: row.author,
+    dateCreated: row.date_created,
+    topicCategory: row.topic_category,
+  }));
+}
+
 // Pure metadata filtering, no query to embed or rank against — used when the
 // user sets filters without typing a search query ("browse by filter").
 // Queries the documents table directly rather than match_chunks (which

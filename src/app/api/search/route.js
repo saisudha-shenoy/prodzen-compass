@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { retrieveChunks, browseDocuments } from "@/lib/retrieval";
+import { retrieveChunks, browseDocuments, keywordSearchChunks } from "@/lib/retrieval";
 
 // Raw chunk-level candidates fetched from match_chunks before any relevance
 // filtering. This used to be 8, which was a real bug, not just a tuning
@@ -129,6 +129,27 @@ const SNIPPET_MAX_LENGTH = 300;
 const RELEVANCE_MARGIN = 0.14;
 const ABSOLUTE_FLOOR = 0.35;
 
+// Hybrid search (additive, Part B of the hybrid-search pass): a second,
+// independent qualification path for keyword matches, OR'd with the semantic
+// threshold above rather than blended into it — cosine similarity and
+// ts_rank aren't on comparable scales, and blending would mean re-deriving
+// (and re-calibrating) a combined threshold, undoing the tuning this session
+// already did for RELEVANCE_MARGIN/ABSOLUTE_FLOOR. This never removes a
+// semantic match; it only adds keyword-only matches the semantic path missed
+// (e.g. "Watershed", "Swadesh Darshan", or "esg" vs "ESG" — see SQ.1).
+//
+// keyword_search_chunks() already gates on `@@` (the term must actually
+// appear in the chunk via tsquery matching) before ts_rank is computed at
+// all, so ts_rank here is mostly an ordering signal, not a second pass/fail
+// gate on top of a real match. MIN_KEYWORD_RANK is set low (0.01) so it only
+// screens out the small number of technically-matching-but-negligible edge
+// cases (e.g. a single occurrence of a common word buried in a long chunk),
+// not real matches on the short, low-noise proper-noun/acronym queries this
+// path targets. Starting value only — Part D validates it against real data,
+// and it's expected to get tuned further once real usage data exists.
+const KEYWORD_MATCH_COUNT = 20;
+const MIN_KEYWORD_RANK = 0.01;
+
 function errorResponse(message, status = 500) {
   return NextResponse.json({ error: message }, { status });
 }
@@ -142,10 +163,21 @@ function truncateSnippet(text, maxLength = SNIPPET_MAX_LENGTH) {
 
 // Chunk-level results -> one card per document, keeping the highest-similarity
 // chunk as the representative snippet and counting how many chunks matched.
+//
+// Deliberately does NOT re-sort by similarity at the end. Callers now pass
+// chunks pre-ordered by the hybrid ranking rule (semantic-qualifying chunks
+// in their existing similarity order, then keyword-only-qualifying chunks
+// appended in ts_rank order — see the route handler below), and keyword-only
+// chunks have no cosine similarity to sort by at all. match_chunks() already
+// returns semantic results in similarity-descending order, so for a
+// semantic-only result set this is a no-op; Map preserves insertion order,
+// so first-occurrence order (which is the intended rank) is what comes out.
 function groupByDocument(chunks) {
   const byDocument = new Map();
 
   for (const chunk of chunks) {
+    // keyword-only chunks carry a ts_rank, not a cosine similarity.
+    const similarity = chunk.similarity ?? null;
     const existing = byDocument.get(chunk.documentId);
     if (!existing) {
       byDocument.set(chunk.documentId, {
@@ -157,19 +189,19 @@ function groupByDocument(chunks) {
         date_created: chunk.dateCreated,
         topic_category: chunk.topicCategory,
         snippet: truncateSnippet(chunk.content),
-        similarity: chunk.similarity,
+        similarity,
         matchedChunkCount: 1,
       });
     } else {
       existing.matchedChunkCount += 1;
-      if (chunk.similarity > existing.similarity) {
+      if (similarity != null && (existing.similarity == null || similarity > existing.similarity)) {
         existing.snippet = truncateSnippet(chunk.content);
-        existing.similarity = chunk.similarity;
+        existing.similarity = similarity;
       }
     }
   }
 
-  return Array.from(byDocument.values()).sort((a, b) => b.similarity - a.similarity);
+  return Array.from(byDocument.values());
 }
 
 // Browse-by-filter results are already one row per document, ordered by
@@ -240,7 +272,30 @@ export async function POST(request) {
   // true noise, not the mechanism causing this bug.
   const topScore = chunks.length ? Math.max(...chunks.map((chunk) => chunk.similarity)) : 0;
   const threshold = hasAnyFilter(filters) ? ABSOLUTE_FLOOR : Math.max(topScore - RELEVANCE_MARGIN, ABSOLUTE_FLOOR);
-  const relevantChunks = chunks.filter((chunk) => chunk.similarity >= threshold);
+  const semanticQualified = chunks.filter((chunk) => chunk.similarity >= threshold);
+
+  // Keyword path: independent of, and additive to, the semantic filtering
+  // above (see the hybrid-search comment near MIN_KEYWORD_RANK). Failure
+  // here degrades to semantic-only results rather than failing the request —
+  // this path is a supplement, not a dependency.
+  let keywordQualified = [];
+  try {
+    const keywordChunks = await keywordSearchChunks(query, filters, KEYWORD_MATCH_COUNT);
+    keywordQualified = keywordChunks.filter((chunk) => chunk.rank > MIN_KEYWORD_RANK);
+  } catch (err) {
+    console.error(`Keyword search failed, continuing with semantic-only results: ${err.message}`);
+  }
+
+  const semanticIds = new Set(semanticQualified.map((chunk) => chunk.chunkId));
+  const keywordOnly = keywordQualified
+    .filter((chunk) => !semanticIds.has(chunk.chunkId))
+    .sort((a, b) => b.rank - a.rank);
+
+  // Ranking rule (starting point, not final — re-ranking is a later, separate
+  // phase): semantic-qualifying chunks keep their existing similarity-based
+  // order; keyword-only-qualifying chunks are appended after them, ordered
+  // by ts_rank.
+  const relevantChunks = [...semanticQualified, ...keywordOnly];
 
   return NextResponse.json(groupByDocument(relevantChunks));
 }
