@@ -15,7 +15,7 @@ const nextConfig = {
   // this worked locally. Externalizing both packages makes Next.js resolve them
   // via real Node `require()` at runtime instead, which pdfjs-dist's own
   // fallback path handles correctly.
-  serverExternalPackages: ["officeparser", "pdf-parse", "pdfjs-dist"],
+  serverExternalPackages: ["officeparser", "pdf-parse", "pdfjs-dist", "@napi-rs/canvas"],
 };
 
 export default nextConfig;
