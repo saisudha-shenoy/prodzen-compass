@@ -1,3 +1,24 @@
+import ReactMarkdown from "react-markdown";
+
+// Blank Client on a citation reads as "field intentionally empty" rather
+// than missing/broken data — same muted-italic treatment already used for
+// the "Source document no longer available" citation state below.
+function formatOptionalMeta(value) {
+  return value || <span style={{ fontStyle: "italic", color: "oklch(70% 0.006 80)" }}>Not specified</span>;
+}
+
+// Assistant answers are markdown (see the /api/ask system prompt's
+// formatting instruction) — override element spacing/sizing so bullets,
+// paragraphs, and bold fit the chat bubble's existing 14.5px/1.6 typography
+// instead of the browser's default block margins.
+const markdownComponents = {
+  p: ({ children }) => <p style={{ margin: "0 0 8px", lineHeight: 1.6 }}>{children}</p>,
+  ul: ({ children }) => <ul style={{ margin: "0 0 8px", paddingLeft: "20px", lineHeight: 1.6 }}>{children}</ul>,
+  ol: ({ children }) => <ol style={{ margin: "0 0 8px", paddingLeft: "20px", lineHeight: 1.6 }}>{children}</ol>,
+  li: ({ children }) => <li style={{ marginBottom: "3px" }}>{children}</li>,
+  strong: ({ children }) => <strong style={{ fontWeight: 700 }}>{children}</strong>,
+};
+
 export default function AskTab({ documents, chatMessages, chatInput, setChatInput, isThinking, sendChat, onRetry, goUpload }) {
   if (documents.length === 0) {
     return (
@@ -82,7 +103,7 @@ export default function AskTab({ documents, chatMessages, chatInput, setChatInpu
             {m.isAssistant && (
               <div style={{ alignSelf: "flex-start", maxWidth: "78%" }}>
                 <div style={{ background: "oklch(100% 0 0)", border: "1px solid oklch(92% 0.006 80)", padding: "14px 18px", borderRadius: "14px 14px 14px 2px", fontSize: "14.5px", lineHeight: 1.6 }}>
-                  {m.text}
+                  <ReactMarkdown components={markdownComponents}>{m.text}</ReactMarkdown>
                 </div>
                 {m.hasCitations && (
                   <div style={{ marginTop: "8px", paddingLeft: "6px", display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -107,7 +128,7 @@ export default function AskTab({ documents, chatMessages, chatInput, setChatInpu
                               textDecoration: "none",
                             }}
                           >
-                            <span style={{ fontWeight: 700, color: "#33377D" }}>[{c.n}]</span> {c.title} — {c.client || "—"} · {c.documentType} · {c.dateCreated}
+                            <span style={{ fontWeight: 700, color: "#33377D" }}>[{c.n}]</span> {c.title} — {formatOptionalMeta(c.client)} · {c.documentType} · {c.dateCreated}
                           </a>
                         )}
                         {c.available && !c.hasFile && (
@@ -123,7 +144,7 @@ export default function AskTab({ documents, chatMessages, chatInput, setChatInpu
                               color: "oklch(48% 0.01 80)",
                             }}
                           >
-                            <span style={{ fontWeight: 700, color: "#33377D" }}>[{c.n}]</span> {c.title} — {c.client || "—"} · {c.documentType} · {c.dateCreated}
+                            <span style={{ fontWeight: 700, color: "#33377D" }}>[{c.n}]</span> {c.title} — {formatOptionalMeta(c.client)} · {c.documentType} · {c.dateCreated}
                           </div>
                         )}
                         {c.unavailable && (
