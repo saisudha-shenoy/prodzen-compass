@@ -204,14 +204,38 @@ export default function SearchTab({
   return (
     <div>
       <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "24px" }}>
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          onKeyDown={handleSearchKeyDown}
-          placeholder="e.g. European market entry strategy"
-          style={{ width: "100%", padding: "16px 20px", fontSize: "16px", border: "1px solid oklch(88% 0.006 80)", borderRadius: "12px", background: "oklch(100% 0 0)", outline: "none" }}
-        />
+        <div style={{ position: "relative" }}>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="e.g. European market entry strategy"
+            style={{ width: "100%", padding: "16px 44px 16px 20px", fontSize: "16px", border: "1px solid oklch(88% 0.006 80)", borderRadius: "12px", background: "oklch(100% 0 0)", outline: "none" }}
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              aria-label="Clear search"
+              title="Clear search"
+              style={{
+                position: "absolute",
+                right: "14px",
+                top: "50%",
+                transform: "translateY(-50%)",
+                background: "none",
+                border: "none",
+                color: "oklch(55% 0.01 80)",
+                fontSize: "20px",
+                lineHeight: 1,
+                cursor: "pointer",
+                padding: "4px",
+              }}
+            >
+              ×
+            </button>
+          )}
+        </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "14px", alignItems: "flex-end", padding: "14px 16px", background: "oklch(100% 0 0)", border: "1px solid oklch(92% 0.006 80)", borderRadius: "12px" }}>
           <span style={{ fontSize: "12px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "oklch(48% 0.01 80)", alignSelf: "center" }}>Filters</span>
           <FilterField label="Client">
@@ -279,7 +303,7 @@ export default function SearchTab({
               ))}
             </select>
           </FilterField>
-          <FilterField label="Date Range">
+          <FilterField label="Created Date">
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <input
                 type="date"

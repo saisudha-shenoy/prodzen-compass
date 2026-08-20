@@ -112,7 +112,6 @@ export default function Page() {
   }
 
   const clearFilters = () => {
-    setSearchQuery("");
     setClientFilter("All");
     setTypeFilter("All");
     setAuthorFilter("All");
