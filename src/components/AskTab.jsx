@@ -2,9 +2,11 @@ import ReactMarkdown from "react-markdown";
 
 // Blank Client on a citation reads as "field intentionally empty" rather
 // than missing/broken data — same muted-italic treatment already used for
-// the "Source document no longer available" citation state below.
+// the "Source document no longer available" citation state below. Names the
+// field explicitly (not just "Not specified") since the citation line has
+// no column header to imply which field is blank.
 function formatOptionalMeta(value) {
-  return value || <span style={{ fontStyle: "italic", color: "oklch(70% 0.006 80)" }}>Not specified</span>;
+  return value || <span style={{ fontStyle: "italic", color: "oklch(70% 0.006 80)" }}>Client not specified</span>;
 }
 
 // Assistant answers are markdown (see the /api/ask system prompt's

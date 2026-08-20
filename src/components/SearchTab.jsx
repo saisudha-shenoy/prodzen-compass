@@ -29,11 +29,13 @@ function FilterField({ label, children }) {
 }
 
 // Optional metadata fields (Client, Author) render as a filled badge when
-// present. When blank, "Not specified" in italic + the same muted color
-// already used elsewhere for "this isn't real data" (e.g. the disabled
-// "Open document" state below) reads as "field intentionally empty" rather
-// than looking like missing/broken data.
-function MetaBadge({ value, background, color }) {
+// present. When blank, "<Label> not specified" in italic + the same muted
+// color already used elsewhere for "this isn't real data" (e.g. the
+// disabled "Open document" state below) reads as "field intentionally
+// empty" rather than looking like missing/broken data. The badge row has no
+// column headers, so the label is included in the empty-state text itself —
+// otherwise a bare "Not specified" doesn't say which field it refers to.
+function MetaBadge({ value, label, background, color }) {
   if (value) {
     return (
       <span style={{ fontSize: "11.5px", fontWeight: 600, padding: "4px 10px", borderRadius: "999px", background, color }}>{value}</span>
@@ -51,7 +53,7 @@ function MetaBadge({ value, background, color }) {
         color: "oklch(70% 0.006 80)",
       }}
     >
-      Not specified
+      {label} not specified
     </span>
   );
 }
@@ -415,10 +417,10 @@ export default function SearchTab({
                   </div>
                   <div style={{ fontSize: "14.5px", color: "oklch(38% 0.01 80)", lineHeight: 1.55, marginBottom: "14px" }}>{doc.snippet}</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                    <MetaBadge value={doc.client} background="#EEF0FA" color="#33377D" />
+                    <MetaBadge value={doc.client} label="Client" background="#EEF0FA" color="#33377D" />
                     <span style={{ fontSize: "11.5px", fontWeight: 600, padding: "4px 10px", borderRadius: "999px", background: "oklch(95% 0.006 80)", color: "oklch(40% 0.01 80)" }}>{doc.document_type}</span>
                     <span style={{ fontSize: "11.5px", fontWeight: 600, padding: "4px 10px", borderRadius: "999px", background: "oklch(95% 0.006 80)", color: "oklch(40% 0.01 80)" }}>{doc.date_created}</span>
-                    <MetaBadge value={doc.author} background="oklch(95% 0.006 80)" color="oklch(40% 0.01 80)" />
+                    <MetaBadge value={doc.author} label="Author" background="oklch(95% 0.006 80)" color="oklch(40% 0.01 80)" />
                     <span style={{ fontSize: "11.5px", fontWeight: 600, padding: "4px 10px", borderRadius: "999px", background: "oklch(95% 0.006 80)", color: "oklch(40% 0.01 80)" }}>{formatFromTitle(doc.title)}</span>
                   </div>
                   {confirmDeleteId === doc.id && (
