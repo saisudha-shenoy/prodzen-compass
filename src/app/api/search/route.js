@@ -191,12 +191,21 @@ function groupByDocument(chunks) {
         snippet: truncateSnippet(chunk.content),
         similarity,
         matchedChunkCount: 1,
+        // Untruncated, for the in-document viewer to locate and highlight
+        // this exact passage (see /documents/[id]/view) — separate from the
+        // truncated `snippet` above, which is only ever for card display.
+        matchedChunkId: chunk.chunkId,
+        matchedChunkText: chunk.content,
+        matchedPageNumber: chunk.pageNumber ?? null,
       });
     } else {
       existing.matchedChunkCount += 1;
       if (similarity != null && (existing.similarity == null || similarity > existing.similarity)) {
         existing.snippet = truncateSnippet(chunk.content);
         existing.similarity = similarity;
+        existing.matchedChunkId = chunk.chunkId;
+        existing.matchedChunkText = chunk.content;
+        existing.matchedPageNumber = chunk.pageNumber ?? null;
       }
     }
   }

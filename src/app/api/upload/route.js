@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { parseFile, sanitizeExtractedText } from "@/lib/parsers";
 import { chunkText } from "@/lib/chunking";
+import { computePageBoundaries, findChunkPageNumber } from "@/lib/pdfPages";
 import { computeContentHash, checkDuplicate, replaceDuplicate } from "@/lib/duplicateCheck";
 import { supabaseAdmin } from "@/lib/supabase";
 import { ERROR_KIND } from "@/lib/friendlyErrors";
@@ -143,13 +144,19 @@ export async function POST(request) {
   }
 
   let text;
+  let pages;
   try {
-    text = await parseFile(buffer, filename);
+    ({ text, pages } = await parseFile(buffer, filename));
   } catch (err) {
     return errorResponse(`Failed to parse "${filename}": ${err.message}`, 422, ERROR_KIND.PARSE_ERROR);
   }
 
   text = sanitizeExtractedText(text ?? "");
+  // Sanitized identically to `text` above — computePageBoundaries searches
+  // for each page's text *within* the sanitized flat text, so an
+  // unsanitized page string (e.g. still containing a null byte `text`
+  // already had stripped) would silently fail to be found.
+  if (pages) pages = pages.map((p) => ({ ...p, text: sanitizeExtractedText(p.text) }));
 
   if (!text || !text.trim()) {
     return errorResponse(`No extractable text found in "${filename}".`, 422, ERROR_KIND.PARSE_ERROR);
@@ -165,6 +172,13 @@ export async function POST(request) {
   if (chunks.length === 0) {
     return errorResponse(`Chunking produced no content for "${filename}".`, 500, ERROR_KIND.PROCESSING_ERROR);
   }
+
+  // PDF-only (see lib/pdfPages.js) — enables a direct page-jump in the
+  // in-document viewer instead of a full-document text search every time.
+  // null for every other format, and null per-chunk if a chunk's anchor text
+  // can't be located (rare; the viewer falls back to text search for those).
+  const pageMap = computePageBoundaries(text, pages);
+  const chunkPageNumbers = chunks.map((chunk) => findChunkPageNumber(chunk.content, pageMap));
 
   let embeddings;
   try {
@@ -202,6 +216,7 @@ export async function POST(request) {
       content: chunk.content,
       embedding: embeddings[i],
       chunk_index: chunk.chunkIndex,
+      page_number: chunkPageNumbers[i],
     }));
     const { error } = await supabaseAdmin.from("chunks").insert(rows);
     if (error) throw new Error(error.message);

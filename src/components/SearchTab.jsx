@@ -385,6 +385,16 @@ export default function SearchTab({
             <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
               {visibleResults.map((doc) => {
                 const hasFile = Boolean(storagePathById.get(doc.id));
+                // In-document highlighting only covers PDF/DOCX (see the
+                // scoping writeup) and only when this result actually came
+                // from a matched chunk (not a browse-by-filter result,
+                // which has no specific passage to highlight) — everything
+                // else keeps the original raw-download link unchanged.
+                const format = formatFromTitle(doc.title);
+                const openHref =
+                  hasFile && doc.matchedChunkId && (format === "PDF" || format === "DOCX")
+                    ? `/documents/${doc.id}/view?chunk=${doc.matchedChunkId}`
+                    : `/api/documents/${doc.id}/download`;
                 return (
                 <div key={doc.id} style={{ background: "oklch(100% 0 0)", border: "1px solid oklch(92% 0.006 80)", borderRadius: "14px", padding: "20px 22px" }}>
                   <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "6px" }}>
@@ -392,7 +402,7 @@ export default function SearchTab({
                     <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
                       {hasFile ? (
                         <a
-                          href={`/api/documents/${doc.id}/download`}
+                          href={openHref}
                           target="_blank"
                           rel="noopener noreferrer"
                           style={{ background: "none", border: "none", color: "#272A77", fontSize: "12px", fontWeight: 600, cursor: "pointer", padding: "4px 8px", whiteSpace: "nowrap", textDecoration: "none" }}

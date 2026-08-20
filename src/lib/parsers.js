@@ -137,17 +137,32 @@ async function parseImage(buffer, filename) {
 // Scanned/image-only PDFs yield almost no text from the PDF text layer. Per the
 // PRD requirement to support "PDFs, including scanned documents, with OCR
 // fallback", rasterize each page and reuse the same vision-based extraction
-// used for image uploads.
+// used for image uploads. Returns the same {text, pages} shape as the normal
+// text-layer path (see parsePdf) so callers don't need to know which path
+// produced it — text keeps the "## Page N" headers for backward
+// compatibility with chunks already stored from before per-page tracking
+// existed; pages is the same content without the header, for page-number
+// lookups (see lib/pdfPages.js). Scanned PDFs have no real text layer, so
+// this page_number is the best available anchor — a page-jump, not a
+// pixel-precise highlight (there's no OCR-to-image coordinate mapping).
 async function ocrScannedPdf(parser) {
   const screenshots = await parser.getScreenshot();
-  const pageTexts = [];
+  const pages = [];
   for (const page of screenshots.pages) {
     const text = await extractTextFromImageDataUrl(page.dataUrl);
-    pageTexts.push(`## Page ${page.pageNumber}\n${text}`);
+    pages.push({ num: page.pageNumber, text });
   }
-  return pageTexts.join("\n\n");
+  return {
+    text: pages.map((p) => `## Page ${p.num}\n${p.text}`).join("\n\n"),
+    pages,
+  };
 }
 
+// Returns { text, pages } — text is the flattened document text chunking
+// already operates on; pages is pdf-parse's per-page breakdown (already
+// computed by the library, previously discarded here), used only to derive
+// a page_number per chunk after chunking (see lib/pdfPages.js). Chunking
+// itself is untouched — it still splits the flat `text` exactly as before.
 async function parsePdf(buffer, filename) {
   let parser;
   try {
@@ -156,7 +171,7 @@ async function parsePdf(buffer, filename) {
     if (result.text.trim().length < MIN_PDF_TEXT_LENGTH) {
       return await ocrScannedPdf(parser);
     }
-    return result.text;
+    return { text: result.text, pages: result.pages.map((p) => ({ num: p.num, text: p.text })) };
   } catch (err) {
     throw new Error(`Failed to parse PDF file "${filename}": ${err.message}`);
   } finally {
@@ -175,24 +190,28 @@ export function sanitizeExtractedText(text) {
     .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
 }
 
+// Always returns { text, pages }. pages is only ever populated for PDFs
+// (the only format with a real page concept in the source file) — every
+// other format returns pages: null, and downstream code (chunk page-number
+// assignment) treats that as "no page data available" rather than an error.
 export async function parseFile(buffer, filename) {
   const ext = getExtension(filename);
   switch (ext) {
     case "docx":
-      return parseDocx(buffer, filename);
+      return { text: await parseDocx(buffer, filename), pages: null };
     case "pdf":
       return parsePdf(buffer, filename);
     case "xlsx":
     case "csv":
-      return parseSpreadsheet(buffer, filename);
+      return { text: await parseSpreadsheet(buffer, filename), pages: null };
     case "pptx":
-      return parsePptx(buffer, filename);
+      return { text: await parsePptx(buffer, filename), pages: null };
     case "txt":
-      return parseTxt(buffer, filename);
+      return { text: await parseTxt(buffer, filename), pages: null };
     case "jpg":
     case "jpeg":
     case "png":
-      return parseImage(buffer, filename);
+      return { text: await parseImage(buffer, filename), pages: null };
     default:
       throw new Error(`Unsupported file extension ".${ext}" for file "${filename}"`);
   }

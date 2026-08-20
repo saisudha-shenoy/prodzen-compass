@@ -1,5 +1,21 @@
 import ReactMarkdown from "react-markdown";
 
+function formatFromTitle(title) {
+  const match = /\.([^.]+)$/.exec(title || "");
+  return match ? match[1].toUpperCase() : "";
+}
+
+// In-document highlighting only covers PDF/DOCX (see the scoping writeup)
+// and only when the citation actually carries a chunk to highlight —
+// everything else keeps the original raw-download link.
+function citationOpenHref(citation) {
+  const format = formatFromTitle(citation.title);
+  if (citation.chunkId && (format === "PDF" || format === "DOCX")) {
+    return `/documents/${citation.documentId}/view?chunk=${citation.chunkId}`;
+  }
+  return `/api/documents/${citation.documentId}/download`;
+}
+
 // Blank Client on a citation reads as "field intentionally empty" rather
 // than missing/broken data — same muted-italic treatment already used for
 // the "Source document no longer available" citation state below. Names the
@@ -114,7 +130,7 @@ export default function AskTab({ documents, chatMessages, chatInput, setChatInpu
                       <div key={c.n}>
                         {c.available && c.hasFile && (
                           <a
-                            href={`/api/documents/${c.documentId}/download`}
+                            href={citationOpenHref(c)}
                             target="_blank"
                             rel="noopener noreferrer"
                             style={{

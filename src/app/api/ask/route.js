@@ -27,7 +27,12 @@ function errorResponse(message, status = 500) {
 // model only ever sees one number per document, so it can't cite the same
 // document twice under different numbers. Preserves the chunks' original
 // (similarity-ranked) order: a document's number reflects the rank of its
-// best-matching chunk.
+// best-matching chunk. That same first (best) chunk is captured as
+// primaryChunkId/primaryPageNumber — used by the in-document viewer to
+// locate and highlight the passage when a citation is opened. A citation is
+// inherently document-level (the model may draw on several of a document's
+// chunks at once), so picking its single best-matching chunk as "the"
+// passage to highlight is a deliberate simplification, not a bug.
 function groupChunksByDocument(chunks) {
   const byDocument = new Map();
   for (const chunk of chunks) {
@@ -42,6 +47,9 @@ function groupChunksByDocument(chunks) {
         documentType: chunk.documentType,
         dateCreated: chunk.dateCreated,
         contents: [chunk.content],
+        primaryChunkId: chunk.chunkId,
+        primaryChunkText: chunk.content,
+        primaryPageNumber: chunk.pageNumber ?? null,
       });
     }
   }
@@ -127,6 +135,9 @@ export async function POST(request) {
       client: doc.client,
       documentType: doc.documentType,
       dateCreated: doc.dateCreated,
+      chunkId: doc.primaryChunkId,
+      chunkText: doc.primaryChunkText,
+      pageNumber: doc.primaryPageNumber,
     };
   });
 
