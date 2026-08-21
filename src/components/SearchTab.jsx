@@ -79,7 +79,7 @@ export default function SearchTab({
   clearFilters,
   onDeleteDocument,
 }) {
-  const [results, setResults] = useState(null); // null = no search performed yet
+  const [results, setResults] = useState(null); // null = nothing fetched yet (only true before the first request resolves)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -87,27 +87,12 @@ export default function SearchTab({
 
   const abortRef = useRef(null);
 
-  // No query text is valid as long as at least one filter is set — that's a
-  // "browse by filter" request rather than a semantic search.
-  const filtersActive = Boolean(
-    clientFilter !== "All" ||
-      typeFilter !== "All" ||
-      authorFilter !== "All" ||
-      industryFilter !== "All" ||
-      dateFrom ||
-      dateTo
-  );
-
+  // Always fetches — with no query and no filters, /api/search browses the
+  // whole corpus (this tab's default view). There's no "nothing to search
+  // for" case anymore: empty query + empty filters is itself a valid
+  // request (see the backend's own comment on why it stopped rejecting
+  // that combination).
   async function runSearch(query) {
-    const trimmed = query.trim();
-    if (!trimmed && !filtersActive) {
-      abortRef.current?.abort();
-      setLoading(false);
-      setError(null);
-      setResults(null);
-      return;
-    }
-
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -120,7 +105,7 @@ export default function SearchTab({
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          query: trimmed,
+          query: query.trim(),
           filters: {
             client: clientFilter !== "All" ? clientFilter : undefined,
             documentType: typeFilter !== "All" ? typeFilter : undefined,
@@ -143,36 +128,26 @@ export default function SearchTab({
     }
   }
 
-  // Run once on mount so arriving here with a query already set (e.g. jumping
-  // in from an Ask citation, or returning to this tab) searches immediately.
+  // Runs on mount (this effect fires once after the first render regardless
+  // of its dependency array, same as any other useEffect) and on every
+  // filter change except Format — Client/Type/Author/Topic/date range are
+  // sent to the backend as real filters, so changing any of them has to
+  // re-fetch. Format isn't a backend filter at all: it's applied
+  // client-side against whatever's already in `results` (see visibleResults
+  // below), which is why it's deliberately left out of this list — the
+  // mount firing already guarantees `results` gets populated before the
+  // user can plausibly pick a format, so Format doesn't need its own
+  // fetch-triggering effect at all, only this one.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (searchQuery.trim() || filtersActive) runSearch(searchQuery);
-  }, []);
-
-  // Filter changes re-run the current query — or, with no query text, run a
-  // browse-by-filter — as long as there's a query or a filter to act on.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (searchQuery.trim() || filtersActive) {
-      runSearch(searchQuery);
-    } else {
-      setResults(null);
-      setError(null);
-    }
+    runSearch(searchQuery);
   }, [clientFilter, typeFilter, authorFilter, industryFilter, dateFrom, dateTo]);
 
-  // Clearing the query text (typing it out, or "Clear filters") drops back to
-  // a pure browse-by-filter if filters are still active, or clears results
-  // entirely if nothing is set anymore.
+  // Typing the query out (or the "Clear search" button) drops back to
+  // whatever the active filters alone would show — the full corpus if none
+  // are set.
   useEffect(() => {
-    if (!searchQuery.trim()) {
-      if (filtersActive) runSearch("");
-      else {
-        setResults(null);
-        setError(null);
-      }
-    }
+    if (!searchQuery.trim()) runSearch("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery]);
 
@@ -195,10 +170,10 @@ export default function SearchTab({
     try {
       await onDeleteDocument(id);
       setConfirmDeleteId((cur) => (cur === id ? null : cur));
-      // Re-run the active search so the deleted card actually disappears from
-      // results too, not just from future citation-availability checks.
-      if (searchQuery.trim() || filtersActive) runSearch(searchQuery);
-      else setResults((prev) => (prev ? prev.filter((d) => d.id !== id) : prev));
+      // Re-run the active view (always at least a full-corpus browse now) so
+      // the deleted card actually disappears from results too, not just
+      // from future citation-availability checks.
+      runSearch(searchQuery);
     } catch (err) {
       setDeleteError(err.message);
     }

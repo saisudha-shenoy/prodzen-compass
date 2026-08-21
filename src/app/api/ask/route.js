@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { retrieveChunks } from "@/lib/retrieval";
+import { getRelevantChunks } from "@/lib/retrieval";
+
+// Generation (and, before it, embedding + two/three retrieval RPCs) can run
+// well past Vercel's default serverless timeout for a slow question or a
+// large context — matches the ceiling set on /api/upload for the same
+// reason. Safe on both Hobby (60s is the configurable max without Fluid
+// Compute) and Pro.
+export const maxDuration = 60;
 
 const CHAT_MODEL = "claude-sonnet-5";
 const MAX_TOKENS = 4096;
-const MATCH_COUNT = 6;
 
 const SYSTEM_PROMPT = `You are ProdZen Compass's knowledge assistant. Answer the user's question using ONLY the numbered context blocks provided below. Never use outside knowledge to fill gaps.
 
@@ -104,7 +110,7 @@ export async function POST(request) {
 
   let chunks;
   try {
-    chunks = await retrieveChunks(question, filters, MATCH_COUNT);
+    chunks = await getRelevantChunks(question, filters);
   } catch (err) {
     return errorResponse(`Failed to retrieve context for question: ${err.message}`, 500);
   }

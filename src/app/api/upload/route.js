@@ -7,6 +7,16 @@ import { computeContentHash, checkDuplicate, replaceDuplicate } from "@/lib/dupl
 import { supabaseAdmin } from "@/lib/supabase";
 import { ERROR_KIND } from "@/lib/friendlyErrors";
 
+// Parsing (OCR for scanned PDFs/images in particular) + embedding a large,
+// many-page file can take well past Vercel's default serverless function
+// timeout (10s on Hobby without this set) — a real, reproducible cause of
+// "Upload failed" for bigger files, not just a local dev-environment flake.
+// A 5.2MB / 44-chunk PDF measured at ~16-20s end to end during testing here,
+// comfortably past the default. 60s is the max allowed on Hobby without
+// Fluid Compute; safe to raise further later if a legitimately huge file
+// still times out.
+export const maxDuration = 60;
+
 const ACCEPTED_EXTENSIONS = ["docx", "pdf", "xlsx", "csv", "pptx", "txt", "jpg", "jpeg", "png"];
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
 const EMBEDDING_MODEL = "text-embedding-3-large";
