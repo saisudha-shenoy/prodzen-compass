@@ -48,6 +48,35 @@ export async function retrieveChunks(query, filters = {}, matchCount = DEFAULT_M
   }));
 }
 
+// Ask questions are full sentences ("Explain the nidhi scheme in India"),
+// not bare keyword queries — but websearch_to_tsquery() (keyword path) and
+// ILIKE ALL() (substring path, below) both AND every word together, so a
+// framing word that never literally appears in the source document (e.g.
+// "explain") silently blocks a match on a real, present term (e.g.
+// "nidhi") even though the actual content is right there. Confirmed
+// directly: "Explain nidhi scheme in India" found 0 keyword/substring
+// candidates against India_Hospitality_Market_Report.pdf, which contains
+// "NIDHI" verbatim; stripping "explain"/"in" alone found it. Semantic
+// search doesn't have this problem (embeddings handle natural phrasing
+// contextually), so this stripping is scoped to only these two paths — the
+// two paths that literally require every surviving word to appear in the
+// text.
+const QUESTION_STOP_WORDS = new Set([
+  "explain", "describe", "define", "discuss", "summarize", "summarise", "elaborate",
+  "tell", "give", "provide", "list", "show", "find", "identify", "outline",
+  "what", "whats", "how", "why", "who", "whom", "which", "when", "where",
+  "is", "are", "was", "were", "do", "does", "did", "can", "could", "would", "should", "will", "shall",
+  "the", "a", "an", "of", "in", "on", "at", "for", "to", "and", "or", "about", "me", "us", "please",
+]);
+
+// Falls back to the original query if stripping would leave nothing (e.g. a
+// query that's entirely framing words) — better to run the original,
+// probably-still-empty query than to send an empty string to Postgres.
+function stripQuestionFraming(query) {
+  const kept = query.split(/\s+/).filter((word) => !QUESTION_STOP_WORDS.has(word.toLowerCase().replace(/[^a-z0-9]/g, "")));
+  return kept.length > 0 ? kept.join(" ") : query;
+}
+
 // Postgres full-text keyword search over chunks.content, independent of the
 // semantic (embedding) path — see keyword_search_chunks() in
 // supabase/migrations/20260819_hybrid_search.sql. Mirrors match_chunks()'s
@@ -55,7 +84,7 @@ export async function retrieveChunks(query, filters = {}, matchCount = DEFAULT_M
 // both. Returns ts_rank instead of cosine similarity; no embedding call.
 export async function keywordSearchChunks(query, filters = {}, matchCount = DEFAULT_MATCH_COUNT) {
   const { data, error } = await supabaseAdmin.rpc("keyword_search_chunks", {
-    query_text: query,
+    query_text: stripQuestionFraming(query),
     match_count: matchCount,
     filter_client: filters.client ?? null,
     filter_document_type: filters.documentType ?? null,
@@ -93,8 +122,9 @@ export async function keywordSearchChunks(query, filters = {}, matchCount = DEFA
 // stemmed lexeme, no matter which threshold is used. Plain ILIKE substring
 // matching against the raw chunk text sidesteps stemming entirely. Patterns
 // are built here (one '%word%' per query word, 3+ chars to skip noise like
-// "in"/"of") rather than in SQL, so the escaping/splitting logic lives in
-// one place and stays easy to test.
+// "in"/"of", and excluding QUESTION_STOP_WORDS to skip natural-language
+// framing like "explain" — see that constant's comment) rather than in SQL,
+// so the escaping/splitting logic lives in one place and stays easy to test.
 export async function substringSearchChunks(query, filters = {}, matchCount = DEFAULT_MATCH_COUNT) {
   const patterns = Array.from(
     new Set(
@@ -102,7 +132,7 @@ export async function substringSearchChunks(query, filters = {}, matchCount = DE
         .toLowerCase()
         .split(/\s+/)
         .map((word) => word.replace(/[^a-z0-9]/g, ""))
-        .filter((word) => word.length >= 3)
+        .filter((word) => word.length >= 3 && !QUESTION_STOP_WORDS.has(word))
     )
   ).map((word) => `%${word.replace(/[%_\\]/g, "\\$&")}%`);
 
