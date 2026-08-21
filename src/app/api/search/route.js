@@ -126,7 +126,9 @@ export async function POST(request) {
     } catch (err) {
       return errorResponse(`Search failed: ${err.message}`, 500);
     }
-    await logActivity({ type: "search", query: query || null, filters, latency_ms: Date.now() - startedAt });
+    // Not logged: browsing by filter (or the tab's default view) never had
+    // a query string typed — it's not a search a user "ran", so it doesn't
+    // belong in the Activity Log.
     return NextResponse.json(formatBrowseResults(documents));
   }
 
