@@ -330,6 +330,12 @@ export default function Page() {
     const isRetry = retryText !== undefined;
     const q = (isRetry ? retryText : chatInput).trim();
     if (!q || isThinking) return;
+    // Snapshot of the session's history *before* this turn — sent to the
+    // backend so a follow-up (e.g. "what about for the EU market?") can be
+    // resolved against prior turns. Only user/assistant turns carry forward;
+    // a failed turn's error bubble is never replayed as conversation
+    // context.
+    const history = chatMessages.filter((m) => m.role === "user" || m.role === "assistant").map((m) => ({ role: m.role, text: m.text }));
     setChatMessages((prev) =>
       isRetry ? prev.filter((m) => m.role !== "error") : [...prev, { id: nextId("m"), role: "user", text: q }]
     );
@@ -341,7 +347,7 @@ export default function Page() {
       const res = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
+        body: JSON.stringify({ question: q, history }),
       });
       const data = await res.json();
       if (!res.ok || typeof data?.answer !== "string" || !Array.isArray(data?.citations)) {
