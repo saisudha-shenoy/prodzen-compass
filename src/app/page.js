@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import SearchTab from "@/components/SearchTab";
 import AskTab from "@/components/AskTab";
 import UploadTab from "@/components/UploadTab";
+import ActivityLogTab from "@/components/ActivityLogTab";
 import { ACCEPTED_EXT, MAX_UPLOAD_SIZE } from "@/lib/constants";
 import { getFriendlyErrorMessage } from "@/lib/friendlyErrors";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
@@ -22,6 +23,16 @@ function extOf(name) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// YYYY-MM-DD in local time, for <input type="date"> defaults — matches what
+// those inputs already produce/expect elsewhere in this app (Search's own
+// Created Date filter).
+function isoDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 // Uploads the raw file directly to Supabase Storage via a short-lived
@@ -85,6 +96,11 @@ export default function Page() {
   const [uploadFiles, setUploadFiles] = useState([]);
   const [dragActive, setDragActive] = useState(false);
 
+  const [activityLogRows, setActivityLogRows] = useState([]);
+  const [activityLogLoading, setActivityLogLoading] = useState(false);
+  const [activityLogFrom, setActivityLogFrom] = useState(() => isoDate(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)));
+  const [activityLogTo, setActivityLogTo] = useState(() => isoDate(new Date()));
+
   const idCounter = useRef(1);
   const nextId = (prefix) => prefix + idCounter.current++;
 
@@ -97,6 +113,7 @@ export default function Page() {
   const goSearch = () => setActiveTab("search");
   const goAsk = () => setActiveTab("ask");
   const goUpload = () => setActiveTab("upload");
+  const goActivityLog = () => setActiveTab("activityLog");
 
   async function fetchDocuments() {
     try {
@@ -113,6 +130,30 @@ export default function Page() {
   useEffect(() => {
     fetchDocuments();
   }, []);
+
+  async function fetchActivityLog() {
+    setActivityLogLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (activityLogFrom) params.set("from", activityLogFrom);
+      if (activityLogTo) params.set("to", activityLogTo);
+      const res = await fetch(`/api/activity-log?${params.toString()}`);
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setActivityLogRows(data);
+    } catch {
+      // Best-effort — the tab just keeps showing its last-loaded rows.
+    } finally {
+      setActivityLogLoading(false);
+    }
+  }
+
+  // Loads on first visit to the tab, and again whenever the date range
+  // changes while already on it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (activeTab !== "activityLog") return;
+    fetchActivityLog();
+  }, [activeTab, activityLogFrom, activityLogTo]);
 
   async function deleteDocument(id) {
     const res = await fetch(`/api/documents/${id}`, { method: "DELETE" });
@@ -355,13 +396,40 @@ export default function Page() {
       }
       setChatMessages((prev) => [
         ...prev,
-        { id: nextId("m"), role: "assistant", text: data.answer, citations: data.citations, hasCitations: Boolean(data.hasCitations) },
+        {
+          id: nextId("m"),
+          role: "assistant",
+          text: data.answer,
+          citations: data.citations,
+          hasCitations: Boolean(data.hasCitations),
+          logId: data.logId ?? null,
+          feedback: null,
+        },
       ]);
     } catch (err) {
       const friendlyMessage = getFriendlyErrorMessage({ message: err?.message });
       setChatMessages((prev) => [...prev, { id: nextId("m"), role: "error", text: friendlyMessage }]);
     } finally {
       setIsThinking(false);
+    }
+  }
+
+  // Optimistic — the button reflects the click immediately; a failure just
+  // means the row's feedback column doesn't end up updated server-side,
+  // which is a minor, self-correcting inconsistency (the user can click
+  // again) rather than something worth blocking or erroring the UI over.
+  async function submitFeedback(logId, feedback) {
+    if (!logId) return;
+    setChatMessages((prev) => prev.map((m) => (m.logId === logId ? { ...m, feedback } : m)));
+    try {
+      const res = await fetch(`/api/activity-log/${logId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback }),
+      });
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+    } catch {
+      // Best-effort, see comment above.
     }
   }
 
@@ -403,6 +471,9 @@ export default function Page() {
             <button style={tabBtnStyle(activeTab === "upload")} onClick={goUpload}>
               Upload
             </button>
+            <button style={tabBtnStyle(activeTab === "activityLog")} onClick={goActivityLog}>
+              Activity Log
+            </button>
           </nav>
         </div>
       </div>
@@ -442,6 +513,18 @@ export default function Page() {
             sendChat={sendChat}
             onRetry={retryLastQuestion}
             goUpload={goUpload}
+            onFeedback={submitFeedback}
+          />
+        )}
+
+        {activeTab === "activityLog" && (
+          <ActivityLogTab
+            rows={activityLogRows}
+            isLoading={activityLogLoading}
+            dateFrom={activityLogFrom}
+            setDateFrom={setActivityLogFrom}
+            dateTo={activityLogTo}
+            setDateTo={setActivityLogTo}
           />
         )}
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getRelevantChunks } from "@/lib/retrieval";
+import { logActivity } from "@/lib/activityLog";
 
 // Generation (and, before it, embedding + two/three retrieval RPCs) can run
 // well past Vercel's default serverless timeout for a slow question or a
@@ -163,6 +164,7 @@ async function generateAnswer(anthropicClient, systemPrompt, history, userMessag
 }
 
 export async function POST(request) {
+  const startedAt = Date.now();
   let body;
   try {
     body = await request.json();
@@ -189,11 +191,16 @@ export async function POST(request) {
   }
 
   if (chunks.length === 0) {
-    return NextResponse.json({
-      answer: "I couldn't find any relevant information in the knowledge base for this question.",
+    const noContextAnswer = "I couldn't find any relevant information in the knowledge base for this question.";
+    const logId = await logActivity({
+      type: "ask",
+      query: question,
+      retrieved_chunk_ids: [],
       citations: [],
-      hasCitations: false,
+      answer: noContextAnswer,
+      latency_ms: Date.now() - startedAt,
     });
+    return NextResponse.json({ answer: noContextAnswer, citations: [], hasCitations: false, logId });
   }
 
   const documents = groupChunksByDocument(chunks);
@@ -220,5 +227,14 @@ export async function POST(request) {
     };
   });
 
-  return NextResponse.json({ answer, citations, hasCitations: citations.length > 0 });
+  const logId = await logActivity({
+    type: "ask",
+    query: question,
+    retrieved_chunk_ids: chunks.map((c) => c.chunkId),
+    citations,
+    answer,
+    latency_ms: Date.now() - startedAt,
+  });
+
+  return NextResponse.json({ answer, citations, hasCitations: citations.length > 0, logId });
 }

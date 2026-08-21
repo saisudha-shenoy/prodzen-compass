@@ -37,7 +37,20 @@ const markdownComponents = {
   strong: ({ children }) => <strong style={{ fontWeight: 700 }}>{children}</strong>,
 };
 
-export default function AskTab({ documents, chatMessages, chatInput, setChatInput, isThinking, sendChat, onRetry, goUpload }) {
+function feedbackBtnStyle(active, activeColor) {
+  return {
+    border: "1px solid " + (active ? activeColor : "oklch(88% 0.006 80)"),
+    background: active ? activeColor : "oklch(100% 0 0)",
+    color: active ? "oklch(99% 0.01 80)" : "oklch(45% 0.01 80)",
+    borderRadius: "7px",
+    padding: "4px 10px",
+    fontSize: "11.5px",
+    fontWeight: 600,
+    cursor: "pointer",
+  };
+}
+
+export default function AskTab({ documents, chatMessages, chatInput, setChatInput, isThinking, sendChat, onRetry, goUpload, onFeedback }) {
   if (documents.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: "100px 20px" }}>
@@ -183,6 +196,17 @@ export default function AskTab({ documents, chatMessages, chatInput, setChatInpu
                         )}
                       </div>
                     ))}
+                  </div>
+                )}
+                {m.logId && (
+                  <div style={{ marginTop: "8px", paddingLeft: "6px", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{ fontSize: "11px", color: "oklch(58% 0.01 80)" }}>Was this helpful?</span>
+                    <button style={feedbackBtnStyle(m.feedback === "helpful", "#2E7D4F")} onClick={() => onFeedback(m.logId, "helpful")}>
+                      Helpful
+                    </button>
+                    <button style={feedbackBtnStyle(m.feedback === "not_helpful", "#B3441E")} onClick={() => onFeedback(m.logId, "not_helpful")}>
+                      Not helpful
+                    </button>
                   </div>
                 )}
               </div>

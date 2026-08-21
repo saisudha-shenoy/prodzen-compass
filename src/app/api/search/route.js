@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRelevantChunks, browseDocuments } from "@/lib/retrieval";
+import { logActivity } from "@/lib/activityLog";
 
 // "Browse by filter" (no query text) has no similarity score to rank by, so
 // there's no reason to cap it the way semantic search results are capped —
@@ -97,6 +98,7 @@ function formatBrowseResults(documents) {
 }
 
 export async function POST(request) {
+  const startedAt = Date.now();
   let body;
   try {
     body = await request.json();
@@ -124,6 +126,7 @@ export async function POST(request) {
     } catch (err) {
       return errorResponse(`Search failed: ${err.message}`, 500);
     }
+    await logActivity({ type: "search", query: query || null, filters, latency_ms: Date.now() - startedAt });
     return NextResponse.json(formatBrowseResults(documents));
   }
 
@@ -134,5 +137,6 @@ export async function POST(request) {
     return errorResponse(`Search failed: ${err.message}`, 500);
   }
 
+  await logActivity({ type: "search", query, filters, latency_ms: Date.now() - startedAt });
   return NextResponse.json(groupByDocument(relevantChunks));
 }
