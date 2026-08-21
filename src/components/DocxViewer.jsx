@@ -9,34 +9,64 @@ function normalize(str) {
   return str.replace(/\s+/g, " ").trim();
 }
 
-// Walks every text node under root, building a normalized (whitespace-
-// collapsed) version of its full text alongside a parallel array mapping
-// each normalized character back to the exact (node, offset) it came from.
-// Not trimmed — trimming would desync the two arrays' indices.
+// Block-level tags mammoth's convertToHtml output uses. Consecutive text
+// nodes across one of these boundaries (e.g. the end of one <p> and the
+// start of the next) have no whitespace *character* between them in the
+// DOM — the paragraph break is structural, not textual — so a plain
+// TreeWalker-over-text-nodes concatenation collapses "PRODZEN" and "Client
+// Onboarding Framework" (separate <p>s) into "PRODZENClient Onboarding
+// Framework" with no space, where the chunk's own normalize() (collapsing
+// the original "\n\n" between paragraphs) keeps a space. That mismatch
+// broke anchor matching for almost any chunk spanning a paragraph
+// boundary — i.e. most chunks. Walking the element tree instead and
+// inserting a synthetic space at each block boundary keeps the two
+// normalized forms aligned.
+const BLOCK_TAGS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "TR", "TD", "TH", "BR", "DIV", "TABLE", "UL", "OL"]);
+
+// Walks the DOM under root, building a normalized (whitespace-collapsed,
+// block-boundary-aware) version of its full text alongside a parallel array
+// mapping each normalized character back to the exact (node, offset) it
+// came from. Not trimmed — trimming would desync the two arrays' indices.
 function buildNormalizedIndex(root) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const positions = [];
   let normalizedText = "";
   let lastWasSpace = true;
-  let node = walker.nextNode();
-  while (node) {
-    const raw = node.nodeValue;
-    for (let i = 0; i < raw.length; i++) {
-      const ch = raw[i];
-      if (/\s/.test(ch)) {
-        if (!lastWasSpace) {
-          normalizedText += " ";
-          positions.push({ node, offset: i });
-          lastWasSpace = true;
-        }
-      } else {
-        normalizedText += ch;
-        positions.push({ node, offset: i });
-        lastWasSpace = false;
-      }
+
+  function addBoundarySpace() {
+    if (!lastWasSpace && normalizedText.length > 0) {
+      normalizedText += " ";
+      positions.push(positions[positions.length - 1]);
+      lastWasSpace = true;
     }
-    node = walker.nextNode();
   }
+
+  function walk(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const raw = node.nodeValue;
+      for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        if (/\s/.test(ch)) {
+          if (!lastWasSpace) {
+            normalizedText += " ";
+            positions.push({ node, offset: i });
+            lastWasSpace = true;
+          }
+        } else {
+          normalizedText += ch;
+          positions.push({ node, offset: i });
+          lastWasSpace = false;
+        }
+      }
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const isBlock = BLOCK_TAGS.has(node.tagName);
+    if (isBlock) addBoundarySpace();
+    for (const child of node.childNodes) walk(child);
+    if (isBlock) addBoundarySpace();
+  }
+
+  walk(root);
   return { normalizedText, positions };
 }
 

@@ -65,11 +65,31 @@ async function getPageMatch(pdfDoc, pageNum, anchor) {
 
   if (!anchor) return { page, textContent, matchRange: null };
 
-  const idx = fullText.indexOf(anchor);
-  if (idx === -1) return { page, textContent, matchRange: null };
+  // pdf.js sometimes splits a single word across adjacent text items with no
+  // real gap between them (a kerning/glyph-run rendering artifact — e.g.
+  // "July" arriving as two items "Ju" and "ly"). The join loop above can't
+  // tell that apart from a real word boundary, so it inserts a space that
+  // breaks an exact substring match against the anchor. Matching on a
+  // whitespace-squeezed copy of both strings sidesteps this — real content
+  // differences still fail to match (correctly), only incidental spacing
+  // differences are ignored. squeezedToFullIndex maps back to fullText/
+  // itemOffsets positions, which stay exact for highlighting.
+  const squeezedChars = [];
+  const squeezedToFullIndex = [];
+  for (let i = 0; i < fullText.length; i++) {
+    if (!/\s/.test(fullText[i])) {
+      squeezedChars.push(fullText[i]);
+      squeezedToFullIndex.push(i);
+    }
+  }
+  const squeezedText = squeezedChars.join("");
+  const squeezedAnchor = anchor.replace(/\s+/g, "");
 
-  const matchStart = idx;
-  const matchEnd = idx + anchor.length;
+  const sIdx = squeezedText.indexOf(squeezedAnchor);
+  if (sIdx === -1 || squeezedAnchor.length === 0) return { page, textContent, matchRange: null };
+
+  const matchStart = squeezedToFullIndex[sIdx];
+  const matchEnd = squeezedToFullIndex[sIdx + squeezedAnchor.length - 1] + 1;
   const matchedItemIndexes = itemOffsets
     .map((o, i) => ({ ...o, i }))
     .filter((o) => o.end > matchStart && o.start < matchEnd)
