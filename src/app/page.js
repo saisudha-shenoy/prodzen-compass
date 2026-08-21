@@ -6,6 +6,8 @@ import AskTab from "@/components/AskTab";
 import UploadTab from "@/components/UploadTab";
 import { ACCEPTED_EXT, MAX_UPLOAD_SIZE } from "@/lib/constants";
 import { getFriendlyErrorMessage } from "@/lib/friendlyErrors";
+import { supabaseBrowser } from "@/lib/supabaseBrowser";
+import { STORAGE_BUCKET } from "@/lib/storagePath";
 
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + " B";
@@ -22,17 +24,27 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// /api/upload's field names differ from this app's internal meta keys.
-function buildUploadFormData(rawFile, meta, duplicateAction) {
-  const formData = new FormData();
-  formData.append("file", rawFile);
-  formData.append("client", meta.client);
-  formData.append("documentType", meta.type);
-  formData.append("author", meta.author);
-  formData.append("dateCreated", meta.date);
-  formData.append("topicCategory", meta.industry);
-  if (duplicateAction) formData.append("duplicateAction", duplicateAction);
-  return formData;
+// Uploads the raw file directly to Supabase Storage via a short-lived
+// signed URL (minted by /api/upload/sign) rather than sending it through
+// /api/upload itself — Vercel Serverless Functions cap request bodies at
+// ~4.5MB, well under the 25MB this app has always advertised as the upload
+// limit, and that cap was rejecting real files outright before /api/upload's
+// own code ever ran. Returns the storage path /api/upload should be told
+// about (as JSON, no file bytes) to pick the file back up server-side.
+async function uploadToStorage(rawFile) {
+  const signRes = await fetch("/api/upload/sign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: rawFile.name }),
+  });
+  const signData = await signRes.json().catch(() => ({}));
+  if (!signRes.ok) throw new Error(signData.error || `Failed to prepare upload (status ${signRes.status}).`);
+
+  const { path, token } = signData;
+  const { error } = await supabaseBrowser.storage.from(STORAGE_BUCKET).uploadToSignedUrl(path, token, rawFile);
+  if (error) throw new Error(`Failed to upload file: ${error.message}`);
+
+  return path;
 }
 
 function tabBtnStyle(active) {
@@ -221,9 +233,32 @@ export default function Page() {
       await sleep(SIMULATED_INDEXING_MS);
     })();
 
-    const formData = buildUploadFormData(file.file, file.meta, duplicateAction);
-    const fetchDone = fetch("/api/upload", { method: "POST", body: formData })
-      .then(async (res) => {
+    const workDone = (async () => {
+      try {
+        // "replace" resubmits the same already-uploaded file (from the
+        // duplicate-detection round) — no reason to upload it to Storage a
+        // second time. Every other path (fresh submit, or a retry after a
+        // non-duplicate failure) uploads fresh: /api/upload proactively
+        // deletes the pending Storage file on its own failure paths, so a
+        // stale storagePath from a failed attempt won't still exist.
+        const storagePath = duplicateAction === "replace" && file.storagePath ? file.storagePath : await uploadToStorage(file.file);
+        if (!uploadFilesRef.current.some((f) => f.id === id)) return null; // dismissed mid-upload
+        setUploadFiles((prev) => prev.map((f) => (f.id === id ? { ...f, storagePath } : f)));
+
+        const res = await fetch("/api/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            storagePath,
+            filename: file.name,
+            client: file.meta.client,
+            documentType: file.meta.type,
+            author: file.meta.author,
+            dateCreated: file.meta.date,
+            topicCategory: file.meta.industry,
+            duplicateAction,
+          }),
+        });
         let data = {};
         try {
           data = await res.json();
@@ -231,14 +266,16 @@ export default function Page() {
           // fall through with an empty body — handled by the shape checks below
         }
         return { ok: res.ok, status: res.status, data };
-      })
-      .catch((err) => ({ ok: false, status: 0, data: { error: `Network error: ${err.message}` } }));
+      } catch (err) {
+        return { ok: false, status: 0, data: { error: `Network error: ${err.message}` } };
+      }
+    })();
 
-    const [, result] = await Promise.all([stagingDone, fetchDone]);
+    const [, result] = await Promise.all([stagingDone, workDone]);
 
     // The file may have been removed from the queue while this was in flight
     // (shouldn't normally happen mid-upload, but don't resurrect it if so).
-    if (!uploadFilesRef.current.some((f) => f.id === id)) return;
+    if (!result || !uploadFilesRef.current.some((f) => f.id === id)) return;
 
     if (!result.ok) {
       const rawMessage = result.data?.error || `Upload failed (status ${result.status}).`;
@@ -267,6 +304,14 @@ export default function Page() {
 
   function resolveDuplicate(id, action) {
     if (action === "skip") {
+      // Clean up the file already sitting in Storage from the round that
+      // detected the duplicate — /api/upload deliberately leaves it in
+      // place (in case the user picks "Replace" instead), so nothing else
+      // will remove it once the user picks "Skip".
+      const file = uploadFiles.find((f) => f.id === id);
+      if (file?.storagePath) {
+        fetch(`/api/upload/sign?path=${encodeURIComponent(file.storagePath)}`, { method: "DELETE" }).catch(() => {});
+      }
       dismissFile(id);
       return;
     }

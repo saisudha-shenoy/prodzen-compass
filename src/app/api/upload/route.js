@@ -5,23 +5,21 @@ import { chunkText } from "@/lib/chunking";
 import { computePageBoundaries, findChunkPageNumber } from "@/lib/pdfPages";
 import { computeContentHash, checkDuplicate, replaceDuplicate } from "@/lib/duplicateCheck";
 import { supabaseAdmin } from "@/lib/supabase";
+import { STORAGE_BUCKET } from "@/lib/storagePath";
 import { ERROR_KIND } from "@/lib/friendlyErrors";
 
 // Parsing (OCR for scanned PDFs/images in particular) + embedding a large,
 // many-page file can take well past Vercel's default serverless function
-// timeout (10s on Hobby without this set) — a real, reproducible cause of
-// "Upload failed" for bigger files, not just a local dev-environment flake.
-// A 5.2MB / 44-chunk PDF measured at ~16-20s end to end during testing here,
-// comfortably past the default. 60s is the max allowed on Hobby without
-// Fluid Compute; safe to raise further later if a legitimately huge file
-// still times out.
+// timeout (10s on Hobby without this set). A 5.2MB / 44-chunk PDF measured
+// at ~16-20s end to end during testing here. 60s is the max allowed on
+// Hobby without Fluid Compute; safe to raise further later if a
+// legitimately huge file still times out.
 export const maxDuration = 60;
 
 const ACCEPTED_EXTENSIONS = ["docx", "pdf", "xlsx", "csv", "pptx", "txt", "jpg", "jpeg", "png"];
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
 const EMBEDDING_MODEL = "text-embedding-3-large";
 const EMBEDDING_BATCH_SIZE = 100;
-const STORAGE_BUCKET = "documents";
 
 const REQUIRED_FIELDS = [
   ["documentType", "Document Type"],
@@ -36,29 +34,19 @@ function getExtension(filename) {
   return match ? match[1].toLowerCase() : "";
 }
 
-// Supabase Storage rejects object keys containing characters outside a safe
-// ASCII subset — confirmed directly: a filename with a Unicode curly
-// apostrophe (U+2019, e.g. "Buyer's Guide") failed upload with
-// "Invalid key: <path>". That failure happened inside the non-fatal
-// try/catch below, so the document indexed and became searchable normally,
-// but storage_path was left null and "Open document" silently stopped
-// working for it. Normalize common Unicode punctuation to ASCII equivalents
-// for readability, strip accents, then replace anything else with "_" so no
-// filename can produce an invalid key. Only used for the storage key — the
-// human-readable original filename is preserved as-is in documents.title.
-function sanitizeStorageFilename(filename) {
-  return filename
-    .replace(/[‘’ʼ]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[–—]/g, "-")
-    .replace(/…/g, "...")
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
 function errorResponse(message, status = 500, kind) {
   return NextResponse.json({ error: message, kind }, { status });
+}
+
+// Best-effort — an orphaned pending/ file left behind after a failed
+// parse/chunk/embed step is a storage-hygiene concern, not something worth
+// failing the (already-failing) request over.
+async function cleanupPendingFile(storagePath) {
+  try {
+    await supabaseAdmin.storage.from(STORAGE_BUCKET).remove([storagePath]);
+  } catch {
+    // already logged via the caller's own error response; nothing more to do
+  }
 }
 
 async function generateEmbeddings(client, chunks) {
@@ -74,37 +62,51 @@ async function generateEmbeddings(client, chunks) {
   return embeddings;
 }
 
+// The client uploads the raw file directly to Supabase Storage first (see
+// /api/upload/sign) and posts only the resulting storage path + metadata
+// here — a small JSON body, never the file bytes themselves. See sign/
+// route.js's comment for why: Vercel's ~4.5MB serverless request-body limit
+// was rejecting anything bigger before this route's own code ever ran, well
+// under the 25MB this app has always advertised.
 export async function POST(request) {
-  let formData;
+  let body;
   try {
-    formData = await request.formData();
+    body = await request.json();
   } catch (err) {
-    return errorResponse(`Could not read upload form data: ${err.message}`, 400);
+    return errorResponse(`Could not read request body: ${err.message}`, 400);
   }
 
-  const file = formData.get("file");
-  if (!file || typeof file === "string") {
-    return errorResponse('Missing required field: "file"', 400);
+  const storagePath = typeof body?.storagePath === "string" ? body.storagePath.trim() : "";
+  const filename = typeof body?.filename === "string" ? body.filename.trim() : "";
+  if (!storagePath || !storagePath.startsWith("pending/")) {
+    return errorResponse('Missing or invalid required field: "storagePath"', 400);
+  }
+  if (!filename) {
+    return errorResponse('Missing required field: "filename"', 400);
   }
 
   const fields = {};
   for (const [key, label] of REQUIRED_FIELDS) {
-    const value = formData.get(key);
+    const value = body?.[key];
     if (!value || typeof value !== "string" || !value.trim()) {
       return errorResponse(`Missing required field: "${label}" (${key})`, 400);
     }
     fields[key] = value.trim();
   }
   for (const key of OPTIONAL_FIELDS) {
-    const value = formData.get(key);
+    const value = body?.[key];
     fields[key] = typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
-  const duplicateAction = formData.get("duplicateAction");
+  // Only ever "replace" or undefined here — "skip" is resolved entirely
+  // client-side via DELETE /api/upload/sign (no document to create, just
+  // discarding the file already sitting in Storage), so it never reaches
+  // this route.
+  const duplicateAction = typeof body?.duplicateAction === "string" ? body.duplicateAction : undefined;
 
-  const filename = file.name;
   const ext = getExtension(filename);
   if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+    await cleanupPendingFile(storagePath);
     return errorResponse(
       `Unsupported file extension ".${ext}". Accepted types: ${ACCEPTED_EXTENSIONS.map((e) => `.${e}`).join(", ")}`,
       400,
@@ -112,21 +114,24 @@ export async function POST(request) {
     );
   }
 
-  if (file.size > MAX_FILE_SIZE_BYTES) {
+  let buffer;
+  try {
+    const { data: fileBlob, error } = await supabaseAdmin.storage.from(STORAGE_BUCKET).download(storagePath);
+    if (error) throw new Error(error.message);
+    buffer = Buffer.from(await fileBlob.arrayBuffer());
+  } catch (err) {
+    return errorResponse(`Failed to read uploaded file: ${err.message}`, 400);
+  }
+
+  if (buffer.length > MAX_FILE_SIZE_BYTES) {
+    await cleanupPendingFile(storagePath);
     return errorResponse(
-      `File is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Maximum allowed size is ${
+      `File is too large (${(buffer.length / (1024 * 1024)).toFixed(1)}MB). Maximum allowed size is ${
         MAX_FILE_SIZE_BYTES / (1024 * 1024)
       }MB.`,
       400,
       ERROR_KIND.TOO_LARGE
     );
-  }
-
-  let buffer;
-  try {
-    buffer = Buffer.from(await file.arrayBuffer());
-  } catch (err) {
-    return errorResponse(`Failed to read uploaded file: ${err.message}`, 400);
   }
 
   let contentHash;
@@ -135,10 +140,14 @@ export async function POST(request) {
     contentHash = computeContentHash(buffer);
     duplicateResult = await checkDuplicate(contentHash);
   } catch (err) {
+    await cleanupPendingFile(storagePath);
     return errorResponse(`Duplicate check failed: ${err.message}`, 500, ERROR_KIND.STORAGE_ERROR);
   }
 
   if (duplicateResult.isDuplicate && duplicateAction !== "replace") {
+    // Deliberately not cleaned up here — the client may resubmit this exact
+    // storagePath with duplicateAction: "replace" next, reusing the already-
+    // uploaded file rather than uploading it a second time.
     return NextResponse.json({
       isDuplicate: true,
       existingDocument: duplicateResult.existingDocument,
@@ -158,6 +167,7 @@ export async function POST(request) {
   try {
     ({ text, pages } = await parseFile(buffer, filename));
   } catch (err) {
+    await cleanupPendingFile(storagePath);
     return errorResponse(`Failed to parse "${filename}": ${err.message}`, 422, ERROR_KIND.PARSE_ERROR);
   }
 
@@ -169,6 +179,7 @@ export async function POST(request) {
   if (pages) pages = pages.map((p) => ({ ...p, text: sanitizeExtractedText(p.text) }));
 
   if (!text || !text.trim()) {
+    await cleanupPendingFile(storagePath);
     return errorResponse(`No extractable text found in "${filename}".`, 422, ERROR_KIND.PARSE_ERROR);
   }
 
@@ -176,10 +187,12 @@ export async function POST(request) {
   try {
     chunks = chunkText(text, { filename });
   } catch (err) {
+    await cleanupPendingFile(storagePath);
     return errorResponse(`Failed to chunk extracted text for "${filename}": ${err.message}`, 500, ERROR_KIND.PROCESSING_ERROR);
   }
 
   if (chunks.length === 0) {
+    await cleanupPendingFile(storagePath);
     return errorResponse(`Chunking produced no content for "${filename}".`, 500, ERROR_KIND.PROCESSING_ERROR);
   }
 
@@ -195,9 +208,12 @@ export async function POST(request) {
     const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     embeddings = await generateEmbeddings(openaiClient, chunks);
   } catch (err) {
+    await cleanupPendingFile(storagePath);
     return errorResponse(`Failed to generate embeddings for "${filename}": ${err.message}`, 502, ERROR_KIND.PROCESSING_ERROR);
   }
 
+  // The file is already at storagePath in its final resting place — no
+  // second upload step needed, just record that path on the document row.
   let documentId;
   try {
     const { data: document, error } = await supabaseAdmin
@@ -211,12 +227,14 @@ export async function POST(request) {
         topic_category: fields.topicCategory,
         source_system: "Manual Upload",
         content_hash: contentHash,
+        storage_path: storagePath,
       })
       .select()
       .single();
     if (error) throw new Error(error.message);
     documentId = document.id;
   } catch (err) {
+    await cleanupPendingFile(storagePath);
     return errorResponse(`Failed to create document record for "${filename}": ${err.message}`, 500, ERROR_KIND.STORAGE_ERROR);
   }
 
@@ -233,28 +251,8 @@ export async function POST(request) {
   } catch (err) {
     // Don't leave a half-written document behind if the chunk writes failed.
     await supabaseAdmin.from("documents").delete().eq("id", documentId);
+    await cleanupPendingFile(storagePath);
     return errorResponse(`Failed to store document chunks for "${filename}": ${err.message}`, 500, ERROR_KIND.STORAGE_ERROR);
-  }
-
-  // Store the original file for later download/open. Non-fatal on failure —
-  // the document is already fully indexed and searchable at this point, so a
-  // document that indexes correctly but can't be re-downloaded is better
-  // than treating a secondary feature's failure as a whole-upload failure.
-  // storage_path is left null, which the download route treats as "no file".
-  try {
-    const storagePath = `${documentId}/${sanitizeStorageFilename(filename)}`;
-    const { error: storageUploadError } = await supabaseAdmin.storage
-      .from(STORAGE_BUCKET)
-      .upload(storagePath, buffer, { contentType: file.type || "application/octet-stream", upsert: false });
-    if (storageUploadError) throw new Error(storageUploadError.message);
-
-    const { error: storagePathUpdateError } = await supabaseAdmin
-      .from("documents")
-      .update({ storage_path: storagePath })
-      .eq("id", documentId);
-    if (storagePathUpdateError) throw new Error(storagePathUpdateError.message);
-  } catch (err) {
-    console.error(`Failed to store original file for document "${documentId}" ("${filename}"): ${err.message}`);
   }
 
   return NextResponse.json({ documentId, chunkCount: chunks.length });
