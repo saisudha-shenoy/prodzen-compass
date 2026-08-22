@@ -21,11 +21,40 @@ function loadPdfjs() {
 }
 
 const RENDER_SCALE = 1.4;
-const ANCHOR_CHARS = 120;
+// A fixed-length anchor truncates mid-word (and mid-highlight) on chunks
+// whose citation-worthy content sits behind a long lead-in — confirmed on
+// India_Hospitality_Market_Report.pdf's chunk 0: a flat 120-char slice cut
+// off inside "May" ("...Report 130 Pages M"), so the title's metadata line,
+// the breadcrumb, and the actual market-size sentence right after it never
+// got highlighted at all, not because they didn't match, but because they
+// were never part of the search anchor to begin with. ANCHOR_MIN_CHARS is
+// the same 120-char floor as before (short chunks with an early sentence
+// boundary are unaffected); buildAnchor extends past it to the next
+// sentence-ending punctuation so a long lead-in still reaches the sentence
+// that follows it, capped at ANCHOR_MAX_CHARS so a chunk with no nearby
+// punctuation (e.g. a table or list) can't blow the anchor out to
+// (and past) the whole chunk.
+const ANCHOR_MIN_CHARS = 120;
+const ANCHOR_MAX_CHARS = 600;
 const HIGHLIGHT_STYLE = { background: "oklch(85% 0.14 95 / 0.55)", borderRadius: "2px" };
 
 function normalize(str) {
   return str.replace(/\s+/g, " ").trim();
+}
+
+// Builds the highlight-search anchor from a chunk's full text: at least
+// ANCHOR_MIN_CHARS, extended to the next sentence-ending punctuation (so a
+// long title/metadata/breadcrumb lead-in doesn't cut off before the actual
+// sentence that follows it), capped at ANCHOR_MAX_CHARS.
+function buildAnchor(chunkText) {
+  if (!chunkText) return null;
+  const normalized = normalize(chunkText);
+  if (normalized.length <= ANCHOR_MIN_CHARS) return normalized;
+
+  const rest = normalized.slice(ANCHOR_MIN_CHARS, ANCHOR_MAX_CHARS);
+  const boundary = /[.!?](?=\s|$)/.exec(rest);
+  const end = boundary ? ANCHOR_MIN_CHARS + boundary.index + 1 : ANCHOR_MAX_CHARS;
+  return normalized.slice(0, Math.min(end, normalized.length));
 }
 
 // Reconstructs page text the same way for both the search anchor and the
@@ -118,7 +147,7 @@ export default function PdfViewer({ fileUrl, chunkText, pageNumber, title }) {
         if (cancelled) return;
         pdfDocRef.current = pdfDoc;
 
-        const anchor = chunkText ? normalize(chunkText).slice(0, ANCHOR_CHARS) : null;
+        const anchor = buildAnchor(chunkText);
         const startPage = pageNumber && pageNumber >= 1 && pageNumber <= pdfDoc.numPages ? pageNumber : 1;
 
         let match = await getPageMatch(pdfDoc, startPage, anchor);
