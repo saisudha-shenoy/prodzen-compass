@@ -362,6 +362,7 @@ export default function Page() {
           hasCitations: Boolean(data.hasCitations),
           logId: data.logId ?? null,
           feedback: null,
+          feedbackReason: null,
         },
       ]);
     } catch (err) {
@@ -384,6 +385,24 @@ export default function Page() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ feedback }),
+      });
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+    } catch {
+      // Best-effort, see comment above.
+    }
+  }
+
+  // Same optimistic, best-effort approach as submitFeedback above — sent as
+  // its own request (rather than bundled with the initial not-helpful click)
+  // since the reason is only known once the user picks a preset or types one.
+  async function submitFeedbackReason(logId, feedbackReason) {
+    if (!logId) return;
+    setChatMessages((prev) => prev.map((m) => (m.logId === logId ? { ...m, feedbackReason } : m)));
+    try {
+      const res = await fetch(`/api/activity-log/${logId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedbackReason }),
       });
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
     } catch {
@@ -469,6 +488,7 @@ export default function Page() {
             onRetry={retryLastQuestion}
             goUpload={goUpload}
             onFeedback={submitFeedback}
+            onFeedbackReason={submitFeedbackReason}
           />
         )}
 

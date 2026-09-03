@@ -1,4 +1,7 @@
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+
+const NOT_HELPFUL_REASON_PRESETS = ["Wrong answer", "Missing information", "Irrelevant citation"];
 
 function formatFromTitle(title) {
   const match = /\.([^.]+)$/.exec(title || "");
@@ -50,7 +53,32 @@ function feedbackBtnStyle(active, activeColor) {
   };
 }
 
-export default function AskTab({ documents, chatMessages, chatInput, setChatInput, isThinking, sendChat, onRetry, goUpload, onFeedback }) {
+const reasonChipStyle = {
+  border: "1px solid oklch(85% 0.03 25)",
+  background: "oklch(98% 0.015 25)",
+  color: "oklch(45% 0.17 25)",
+  borderRadius: "7px",
+  padding: "4px 10px",
+  fontSize: "11.5px",
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+export default function AskTab({ documents, chatMessages, chatInput, setChatInput, isThinking, sendChat, onRetry, goUpload, onFeedback, onFeedbackReason }) {
+  // Tracks which message's "why not helpful?" prompt is currently open —
+  // only one at a time, closed again once a reason is picked/submitted/skipped.
+  const [reasonPromptFor, setReasonPromptFor] = useState(null);
+  const [customReasonDraft, setCustomReasonDraft] = useState("");
+
+  function openReasonPrompt(logId) {
+    setReasonPromptFor(logId);
+    setCustomReasonDraft("");
+  }
+
+  function submitReason(logId, reason) {
+    onFeedbackReason(logId, reason);
+    setReasonPromptFor(null);
+  }
   if (documents.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: "100px 20px" }}>
@@ -199,14 +227,64 @@ export default function AskTab({ documents, chatMessages, chatInput, setChatInpu
                   </div>
                 )}
                 {m.logId && (
-                  <div style={{ marginTop: "8px", paddingLeft: "6px", display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontSize: "11px", color: "oklch(58% 0.01 80)" }}>Was this helpful?</span>
-                    <button style={feedbackBtnStyle(m.feedback === "helpful", "#2E7D4F")} onClick={() => onFeedback(m.logId, "helpful")}>
-                      Helpful
-                    </button>
-                    <button style={feedbackBtnStyle(m.feedback === "not_helpful", "#B3441E")} onClick={() => onFeedback(m.logId, "not_helpful")}>
-                      Not helpful
-                    </button>
+                  <div style={{ marginTop: "8px", paddingLeft: "6px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontSize: "11px", color: "oklch(58% 0.01 80)" }}>Was this helpful?</span>
+                      <button style={feedbackBtnStyle(m.feedback === "helpful", "#2E7D4F")} onClick={() => onFeedback(m.logId, "helpful")}>
+                        Helpful
+                      </button>
+                      <button
+                        style={feedbackBtnStyle(m.feedback === "not_helpful", "#B3441E")}
+                        onClick={() => {
+                          onFeedback(m.logId, "not_helpful");
+                          if (!m.feedbackReason) openReasonPrompt(m.logId);
+                        }}
+                      >
+                        Not helpful
+                      </button>
+                    </div>
+                    {reasonPromptFor === m.logId && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <span style={{ fontSize: "11px", color: "oklch(58% 0.01 80)" }}>What went wrong? (optional)</span>
+                        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                          {NOT_HELPFUL_REASON_PRESETS.map((preset) => (
+                            <button key={preset} style={reasonChipStyle} onClick={() => submitReason(m.logId, preset)}>
+                              {preset}
+                            </button>
+                          ))}
+                        </div>
+                        <div style={{ display: "flex", gap: "6px" }}>
+                          <input
+                            type="text"
+                            value={customReasonDraft}
+                            onChange={(e) => setCustomReasonDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && customReasonDraft.trim()) submitReason(m.logId, customReasonDraft.trim());
+                            }}
+                            placeholder="Other reason…"
+                            style={{ flex: 1, padding: "5px 10px", fontSize: "12px", border: "1px solid oklch(88% 0.006 80)", borderRadius: "7px", outline: "none" }}
+                          />
+                          <button
+                            style={{ ...reasonChipStyle, opacity: customReasonDraft.trim() ? 1 : 0.5, cursor: customReasonDraft.trim() ? "pointer" : "default" }}
+                            disabled={!customReasonDraft.trim()}
+                            onClick={() => submitReason(m.logId, customReasonDraft.trim())}
+                          >
+                            Submit
+                          </button>
+                          <button
+                            style={{ ...reasonChipStyle, border: "1px solid transparent", background: "none", color: "oklch(55% 0.01 80)" }}
+                            onClick={() => setReasonPromptFor(null)}
+                          >
+                            Skip
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {m.feedbackReason && reasonPromptFor !== m.logId && (
+                      <div style={{ fontSize: "11px", color: "oklch(55% 0.01 80)" }}>
+                        Reason noted: <strong>{m.feedbackReason}</strong>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
