@@ -69,6 +69,7 @@ export default function Page() {
   // upload/delete so every tab stays in sync without a page refresh.
   const [documents, setDocuments] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [savedSearches, setSavedSearches] = useState([]);
   const [clientFilter, setClientFilter] = useState("All");
   const [typeFilter, setTypeFilter] = useState("All");
   const [authorFilter, setAuthorFilter] = useState("All");
@@ -109,8 +110,20 @@ export default function Page() {
     }
   }
 
+  async function fetchSavedSearches() {
+    try {
+      const res = await fetch("/api/saved-searches");
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setSavedSearches(data);
+    } catch {
+      // Best-effort — a transient failure here just leaves the saved-search
+      // list on its last-known state until the next successful refresh.
+    }
+  }
+
   useEffect(() => {
     fetchDocuments();
+    fetchSavedSearches();
   }, []);
 
   async function deleteDocument(id) {
@@ -120,6 +133,35 @@ export default function Page() {
       throw new Error(data.error || `Failed to delete document (status ${res.status}).`);
     }
     setDocuments((prev) => prev.filter((d) => d.id !== id));
+  }
+
+  // Persists the exact filter-state shape SearchTab restores from — see
+  // SearchTab's applySavedSearch, which reads these same key names back out.
+  async function saveCurrentSearch(name) {
+    const res = await fetch("/api/saved-searches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        query: searchQuery,
+        filters: { clientFilter, typeFilter, authorFilter, industryFilter, formatFilter, dateFrom, dateTo },
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Failed to save search (status ${res.status}).`);
+    }
+    const saved = await res.json();
+    setSavedSearches((prev) => [saved, ...prev]);
+  }
+
+  async function deleteSavedSearch(id) {
+    const res = await fetch(`/api/saved-searches/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Failed to delete saved search (status ${res.status}).`);
+    }
+    setSavedSearches((prev) => prev.filter((s) => s.id !== id));
   }
 
   const clearFilters = () => {
@@ -473,6 +515,9 @@ export default function Page() {
             dateTo={dateTo}
             setDateTo={setDateTo}
             clearFilters={clearFilters}
+            savedSearches={savedSearches}
+            onSaveSearch={saveCurrentSearch}
+            onDeleteSavedSearch={deleteSavedSearch}
             onDeleteDocument={deleteDocument}
           />
         )}
