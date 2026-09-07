@@ -11,6 +11,29 @@ function formatFromTitle(title) {
   return match ? match[1].toUpperCase() : "";
 }
 
+const SAVED_SEARCH_LABEL_MAX = 64;
+
+// Auto-generated label for a saved search — recomputed from its stored
+// query/filters every render rather than trusting a persisted label, so it
+// always reflects the current formatting even for older entries.
+function summarizeSavedSearch(query, filters) {
+  const f = filters || {};
+  const parts = [];
+  if (query) parts.push(`"${query}"`);
+
+  const filterBits = [];
+  if (f.clientFilter && f.clientFilter !== "All") filterBits.push(f.clientFilter);
+  if (f.typeFilter && f.typeFilter !== "All") filterBits.push(f.typeFilter);
+  if (f.authorFilter && f.authorFilter !== "All") filterBits.push(f.authorFilter);
+  if (f.industryFilter && f.industryFilter !== "All") filterBits.push(f.industryFilter);
+  if (f.formatFilter && f.formatFilter !== "All") filterBits.push(f.formatFilter);
+  if (f.dateFrom || f.dateTo) filterBits.push(`${f.dateFrom || "…"} to ${f.dateTo || "…"}`);
+  if (filterBits.length) parts.push(filterBits.join(", "));
+
+  const label = parts.length ? parts.join(" · ") : "All documents";
+  return label.length > SAVED_SEARCH_LABEL_MAX ? `${label.slice(0, SAVED_SEARCH_LABEL_MAX - 1)}…` : label;
+}
+
 const filterLabelStyle = {
   fontSize: "10.5px",
   fontWeight: 700,
@@ -80,14 +103,13 @@ export default function SearchTab({
   onDeleteDocument,
   savedSearches,
   onSaveSearch,
-  onDeleteSavedSearch,
 }) {
   const [results, setResults] = useState(null); // null = nothing fetched yet (only true before the first request resolves)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deleteError, setDeleteError] = useState(null);
-  const [savingName, setSavingName] = useState(null); // non-null while the "save search" name input is open
+  const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
 
   const abortRef = useRef(null);
@@ -190,26 +212,15 @@ export default function SearchTab({
     }
   };
 
-  const onSaveClick = () => {
+  const onSaveClick = async () => {
     setSaveError(null);
-    setSavingName("");
-  };
-  const onCancelSave = () => {
-    setSaveError(null);
-    setSavingName(null);
-  };
-  const onConfirmSave = async () => {
-    const name = savingName.trim();
-    if (!name) {
-      setSaveError("Give this search a name.");
-      return;
-    }
+    setSaving(true);
     try {
-      await onSaveSearch(name);
-      setSavingName(null);
-      setSaveError(null);
+      await onSaveSearch();
     } catch (err) {
       setSaveError(err.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -392,71 +403,38 @@ export default function SearchTab({
         </div>
 
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px" }}>
-          {savingName === null ? (
-            <button
-              onClick={onSaveClick}
-              style={{ background: "none", border: "1px solid oklch(85% 0.006 80)", color: "#272A77", fontSize: "12.5px", fontWeight: 600, cursor: "pointer", padding: "6px 12px", borderRadius: "8px" }}
-            >
-              Save this search
-            </button>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <input
-                type="text"
-                autoFocus
-                value={savingName}
-                onChange={(e) => setSavingName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onConfirmSave();
-                  if (e.key === "Escape") onCancelSave();
-                }}
-                placeholder="Name this search"
-                style={{ padding: "6px 10px", borderRadius: "8px", border: "1px solid oklch(88% 0.006 80)", fontSize: "13px" }}
-              />
-              <button
-                onClick={onConfirmSave}
-                style={{ background: "#272A77", color: "oklch(99% 0.01 80)", border: "none", padding: "6px 12px", borderRadius: "8px", fontSize: "12.5px", fontWeight: 700, cursor: "pointer" }}
-              >
-                Save
-              </button>
-              <button
-                onClick={onCancelSave}
-                style={{ background: "none", border: "1px solid oklch(85% 0.006 80)", padding: "6px 12px", borderRadius: "8px", fontSize: "12.5px", fontWeight: 600, cursor: "pointer" }}
-              >
-                Cancel
-              </button>
-              {saveError && <span style={{ fontSize: "12.5px", color: "oklch(45% 0.17 25)", fontWeight: 600 }}>{saveError}</span>}
-            </div>
-          )}
-        </div>
+          <button
+            onClick={onSaveClick}
+            disabled={saving}
+            style={{ background: "none", border: "1px solid oklch(85% 0.006 80)", color: "#272A77", fontSize: "12.5px", fontWeight: 600, cursor: saving ? "default" : "pointer", padding: "6px 12px", borderRadius: "8px", opacity: saving ? 0.6 : 1 }}
+          >
+            {saving ? "Saving…" : "Save this search"}
+          </button>
 
-        {savedSearches.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
-            <span style={filterLabelStyle}>Saved Searches</span>
-            {savedSearches.map((saved) => (
-              <span
-                key={saved.id}
-                style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "4px 6px 4px 12px", borderRadius: "999px", background: "#EEF0FA", border: "1px solid oklch(90% 0.01 275)" }}
+          {savedSearches.length > 0 && (
+            <FilterField label="Saved Searches">
+              <select
+                value=""
+                onChange={(e) => {
+                  const saved = savedSearches.find((s) => s.id === e.target.value);
+                  if (saved) applySavedSearch(saved);
+                }}
+                style={{ padding: "8px 10px", borderRadius: "8px", border: "1px solid oklch(88% 0.006 80)", fontSize: "13px", background: "oklch(98% 0.004 80)", maxWidth: "320px" }}
               >
-                <button
-                  onClick={() => applySavedSearch(saved)}
-                  title={`Run "${saved.name}"`}
-                  style={{ background: "none", border: "none", color: "#33377D", fontSize: "12.5px", fontWeight: 600, cursor: "pointer", padding: "2px 0" }}
-                >
-                  {saved.name}
-                </button>
-                <button
-                  onClick={() => onDeleteSavedSearch(saved.id)}
-                  aria-label={`Delete saved search "${saved.name}"`}
-                  title="Delete saved search"
-                  style={{ background: "none", border: "none", color: "oklch(55% 0.01 80)", fontSize: "14px", lineHeight: 1, cursor: "pointer", padding: "2px 4px" }}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+                <option value="" disabled>
+                  Run a saved search…
+                </option>
+                {savedSearches.map((saved) => (
+                  <option key={saved.id} value={saved.id}>
+                    {summarizeSavedSearch(saved.query, saved.filters)}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+          )}
+
+          {saveError && <span style={{ fontSize: "12.5px", color: "oklch(45% 0.17 25)", fontWeight: 600 }}>{saveError}</span>}
+        </div>
       </div>
 
       {loading && (

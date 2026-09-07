@@ -137,12 +137,14 @@ export default function Page() {
 
   // Persists the exact filter-state shape SearchTab restores from — see
   // SearchTab's applySavedSearch, which reads these same key names back out.
-  async function saveCurrentSearch(name) {
+  // No name is passed: the backend keeps only the 5 most recent saves (see
+  // the API route), and the dropdown label is generated from query+filters
+  // at render time, not from anything typed here.
+  async function saveCurrentSearch() {
     const res = await fetch("/api/saved-searches", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name,
         query: searchQuery,
         filters: { clientFilter, typeFilter, authorFilter, industryFilter, formatFilter, dateFrom, dateTo },
       }),
@@ -152,16 +154,7 @@ export default function Page() {
       throw new Error(data.error || `Failed to save search (status ${res.status}).`);
     }
     const saved = await res.json();
-    setSavedSearches((prev) => [saved, ...prev]);
-  }
-
-  async function deleteSavedSearch(id) {
-    const res = await fetch(`/api/saved-searches/${id}`, { method: "DELETE" });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || `Failed to delete saved search (status ${res.status}).`);
-    }
-    setSavedSearches((prev) => prev.filter((s) => s.id !== id));
+    setSavedSearches((prev) => [saved, ...prev].slice(0, 5));
   }
 
   const clearFilters = () => {
@@ -517,7 +510,6 @@ export default function Page() {
             clearFilters={clearFilters}
             savedSearches={savedSearches}
             onSaveSearch={saveCurrentSearch}
-            onDeleteSavedSearch={deleteSavedSearch}
             onDeleteDocument={deleteDocument}
           />
         )}
