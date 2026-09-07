@@ -78,21 +78,26 @@ export default function SearchTab({
   setDateTo,
   clearFilters,
   onDeleteDocument,
+  savedSearches,
+  onSaveSearch,
+  onDeleteSavedSearch,
 }) {
   const [results, setResults] = useState(null); // null = nothing fetched yet (only true before the first request resolves)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deleteError, setDeleteError] = useState(null);
+  const [savingName, setSavingName] = useState(null); // non-null while the "save search" name input is open
+  const [saveError, setSaveError] = useState(null);
 
   const abortRef = useRef(null);
 
-  // Always fetches — with no query and no filters, /api/search browses the
-  // whole corpus (this tab's default view). There's no "nothing to search
-  // for" case anymore: empty query + empty filters is itself a valid
-  // request (see the backend's own comment on why it stopped rejecting
-  // that combination).
-  async function runSearch(query) {
+  // Shared by runSearch (reads the live filter props) and applySavedSearch
+  // (reads a saved record's filters directly, bypassing the props entirely
+  // — necessary because the filter setters below are async, so a search
+  // triggered in the same tick as setClientFilter() etc. would otherwise
+  // still see the stale pre-update values via closure).
+  async function runSearchWithFilters(query, filters) {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -104,17 +109,7 @@ export default function SearchTab({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({
-          query: query.trim(),
-          filters: {
-            client: clientFilter !== "All" ? clientFilter : undefined,
-            documentType: typeFilter !== "All" ? typeFilter : undefined,
-            author: authorFilter !== "All" ? authorFilter : undefined,
-            topicCategory: industryFilter !== "All" ? industryFilter : undefined,
-            dateFrom: dateFrom || undefined,
-            dateTo: dateTo || undefined,
-          },
-        }),
+        body: JSON.stringify({ query: query.trim(), filters }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Search failed (${res.status})`);
@@ -126,6 +121,22 @@ export default function SearchTab({
     } finally {
       if (abortRef.current === controller) setLoading(false);
     }
+  }
+
+  // Always fetches — with no query and no filters, /api/search browses the
+  // whole corpus (this tab's default view). There's no "nothing to search
+  // for" case anymore: empty query + empty filters is itself a valid
+  // request (see the backend's own comment on why it stopped rejecting
+  // that combination).
+  async function runSearch(query) {
+    return runSearchWithFilters(query, {
+      client: clientFilter !== "All" ? clientFilter : undefined,
+      documentType: typeFilter !== "All" ? typeFilter : undefined,
+      author: authorFilter !== "All" ? authorFilter : undefined,
+      topicCategory: industryFilter !== "All" ? industryFilter : undefined,
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+    });
   }
 
   // Runs on mount (this effect fires once after the first render regardless
@@ -177,6 +188,54 @@ export default function SearchTab({
     } catch (err) {
       setDeleteError(err.message);
     }
+  };
+
+  const onSaveClick = () => {
+    setSaveError(null);
+    setSavingName("");
+  };
+  const onCancelSave = () => {
+    setSaveError(null);
+    setSavingName(null);
+  };
+  const onConfirmSave = async () => {
+    const name = savingName.trim();
+    if (!name) {
+      setSaveError("Give this search a name.");
+      return;
+    }
+    try {
+      await onSaveSearch(name);
+      setSavingName(null);
+      setSaveError(null);
+    } catch (err) {
+      setSaveError(err.message);
+    }
+  };
+
+  // Restores query + filter state so the UI (input box, dropdowns) reflects
+  // the saved combination, and separately re-runs the search directly from
+  // the saved record's own filters rather than relying on the effects above
+  // to notice a state change (see runSearchWithFilters).
+  const applySavedSearch = (saved) => {
+    const f = saved.filters || {};
+    const nextQuery = saved.query || "";
+    setSearchQuery(nextQuery);
+    setClientFilter(f.clientFilter ?? "All");
+    setTypeFilter(f.typeFilter ?? "All");
+    setAuthorFilter(f.authorFilter ?? "All");
+    setIndustryFilter(f.industryFilter ?? "All");
+    setFormatFilter(f.formatFilter ?? "All");
+    setDateFrom(f.dateFrom ?? "");
+    setDateTo(f.dateTo ?? "");
+    runSearchWithFilters(nextQuery, {
+      client: f.clientFilter && f.clientFilter !== "All" ? f.clientFilter : undefined,
+      documentType: f.typeFilter && f.typeFilter !== "All" ? f.typeFilter : undefined,
+      author: f.authorFilter && f.authorFilter !== "All" ? f.authorFilter : undefined,
+      topicCategory: f.industryFilter && f.industryFilter !== "All" ? f.industryFilter : undefined,
+      dateFrom: f.dateFrom || undefined,
+      dateTo: f.dateTo || undefined,
+    });
   };
 
   // Sourced from the full corpus (GET /api/documents), not from the last
@@ -331,6 +390,73 @@ export default function SearchTab({
             </button>
           )}
         </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px" }}>
+          {savingName === null ? (
+            <button
+              onClick={onSaveClick}
+              style={{ background: "none", border: "1px solid oklch(85% 0.006 80)", color: "#272A77", fontSize: "12.5px", fontWeight: 600, cursor: "pointer", padding: "6px 12px", borderRadius: "8px" }}
+            >
+              Save this search
+            </button>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <input
+                type="text"
+                autoFocus
+                value={savingName}
+                onChange={(e) => setSavingName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onConfirmSave();
+                  if (e.key === "Escape") onCancelSave();
+                }}
+                placeholder="Name this search"
+                style={{ padding: "6px 10px", borderRadius: "8px", border: "1px solid oklch(88% 0.006 80)", fontSize: "13px" }}
+              />
+              <button
+                onClick={onConfirmSave}
+                style={{ background: "#272A77", color: "oklch(99% 0.01 80)", border: "none", padding: "6px 12px", borderRadius: "8px", fontSize: "12.5px", fontWeight: 700, cursor: "pointer" }}
+              >
+                Save
+              </button>
+              <button
+                onClick={onCancelSave}
+                style={{ background: "none", border: "1px solid oklch(85% 0.006 80)", padding: "6px 12px", borderRadius: "8px", fontSize: "12.5px", fontWeight: 600, cursor: "pointer" }}
+              >
+                Cancel
+              </button>
+              {saveError && <span style={{ fontSize: "12.5px", color: "oklch(45% 0.17 25)", fontWeight: 600 }}>{saveError}</span>}
+            </div>
+          )}
+        </div>
+
+        {savedSearches.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
+            <span style={filterLabelStyle}>Saved Searches</span>
+            {savedSearches.map((saved) => (
+              <span
+                key={saved.id}
+                style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "4px 6px 4px 12px", borderRadius: "999px", background: "#EEF0FA", border: "1px solid oklch(90% 0.01 275)" }}
+              >
+                <button
+                  onClick={() => applySavedSearch(saved)}
+                  title={`Run "${saved.name}"`}
+                  style={{ background: "none", border: "none", color: "#33377D", fontSize: "12.5px", fontWeight: 600, cursor: "pointer", padding: "2px 0" }}
+                >
+                  {saved.name}
+                </button>
+                <button
+                  onClick={() => onDeleteSavedSearch(saved.id)}
+                  aria-label={`Delete saved search "${saved.name}"`}
+                  title="Delete saved search"
+                  style={{ background: "none", border: "none", color: "oklch(55% 0.01 80)", fontSize: "14px", lineHeight: 1, cursor: "pointer", padding: "2px 4px" }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {loading && (
